@@ -9,21 +9,21 @@ const API_KEY = process.env.ANTHROPIC_API_KEY;
 
 app.use(express.json({ limit: '50mb' }));
 
-// Test route — open this in browser to verify server is working
+// Test route â€” open this in browser to verify server is working
 app.get('/api/test', (req, res) => {
   res.json({ status: 'ok', claude: !!API_KEY });
 });
 
-// Claude proxy — receives request from browser, forwards to Anthropic
+// Claude proxy â€” receives request from browser, forwards to Anthropic
 app.post('/api/chat', (req, res) => {
   if (!API_KEY) {
     return res.status(500).json({
-      error: { message: 'ANTHROPIC_API_KEY not set. Add it in Render → Environment.' }
+      error: { message: 'ANTHROPIC_API_KEY not set. Add it in Render â†’ Environment.' }
     });
   }
 
   const payload = JSON.stringify({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-5',
     max_tokens: req.body.max_tokens || 800,
     system: req.body.system || '',
     messages: req.body.messages || []
@@ -60,7 +60,7 @@ app.post('/api/chat', (req, res) => {
   request.end();
 });
 
-// Serve static files — works whether index.html is in root or public/
+// Serve static files â€” works whether index.html is in root or public/
 const publicDir = path.join(__dirname, 'public');
 const staticDir = fs.existsSync(path.join(publicDir, 'index.html')) ? publicDir : __dirname;
 app.use(express.static(staticDir));
