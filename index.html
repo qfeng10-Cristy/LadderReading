@@ -709,7 +709,7 @@ async function detectChapters(texts){
 Rules: real chapters only (skip TOC/preface/index). Exact titles. If none found, make ~20-page sections.
 DATA:\n${summary}`;
   try{
-    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,messages:[{role:'user',content:prompt}]})});
+    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:1000,messages:[{role:'user',content:prompt}]})});
     const data=await res.json();
     const raw=data.content?.find(b=>b.type==='text')?.text||'[]';
     let list=JSON.parse(raw.replace(/```json|```/g,'').trim());
@@ -1141,7 +1141,7 @@ ${pdfFullText||''}`;
   apiMsgs.push({role:'user',content:text});
   showTyping();
   try{
-    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,system:sys,messages:apiMsgs})});
+    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:1000,system:sys,messages:apiMsgs})});
     const data=await res.json(); removeTyping();
     if(data.error) throw new Error(data.error.message);
     const reply=data.content.find(b=>b.type==='text')?.text||'Sorry, no response.';
