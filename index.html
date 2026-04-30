@@ -701,32 +701,11 @@ async function renderPage(num){
   textLayerDiv.style.width=cssW+'px';textLayerDiv.style.height=cssH+'px';textLayerDiv.innerHTML='';
   const tcontent=await page.getTextContent();const sr=cssW/vp.width;
   tcontent.items.forEach(item=>{
-    if(!item.str.trim())return;
-    const tx=pdfjsLib.Util.transform(vp.transform,item.transform);
-    // tx[0]=scaleX, tx[3]=scaleY(neg), tx[4]=x, tx[5]=y (PDF bottom-left origin)
-    const fontSize=Math.abs(tx[3])*sr;
-    const cssX=tx[4]*sr;
-    const cssY=(vp.height-tx[5])*sr;
-    // Scale the item width to CSS pixels so spans don't overflow their text
-    const itemW=item.width*Math.abs(tx[0]/item.transform[0])*sr;
-    const angle=Math.atan2(tx[1],tx[0]);
-    const span=document.createElement('span');
-    span.textContent=item.str;
-    span.style.fontSize=fontSize+'px';
-    span.style.left=cssX+'px';
-    span.style.top=cssY+'px';
-    span.style.width=Math.max(itemW,1)+'px';
-    span.style.lineHeight='1';
-    span.style.transformOrigin='0% 100%';
-    span.style.overflow='hidden';
-    // Scale text to fit width exactly (matches PDF rendering)
-    if(itemW>0&&item.str.length>0){
-      span.style.transform=`scaleX(${itemW/(fontSize*item.str.length*0.6)})${angle?` rotate(${angle}rad)`:''}`;
-      span.style.transformOrigin='0% 100%';
-    } else if(angle){
-      span.style.transform=`rotate(${angle}rad)`;
-    }
-    textLayerDiv.appendChild(span);
+    if(!item.str.trim())return;const tx=pdfjsLib.Util.transform(vp.transform,item.transform);
+    const fontSize=Math.abs(tx[3])*sr,cssX=tx[4]*sr,cssY=(vp.height-tx[5])*sr;
+    const angle=Math.atan2(tx[1],tx[0]);const span=document.createElement('span');
+    span.textContent=item.str;span.style.fontSize=fontSize+'px';span.style.left=cssX+'px';span.style.top=cssY+'px';span.style.lineHeight='1';span.style.transformOrigin='0% 100%';
+    if(angle)span.style.transform=`rotate(${angle}rad)`;textLayerDiv.appendChild(span);
   });
   restoreAnnotations(num);
   const ch=chapters[activeChapter];pageInfo.textContent=`p.${num}  ${num-ch.startPage+1}/${ch.endPage-ch.startPage+1}`;
