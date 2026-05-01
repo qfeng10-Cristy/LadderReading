@@ -23,7 +23,7 @@ app.post('/api/chat', (req, res) => {
   }
 
   const payload = JSON.stringify({
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-4-20250514',
     max_tokens: req.body.max_tokens || 800,
     system: req.body.system || '',
     messages: req.body.messages || []
