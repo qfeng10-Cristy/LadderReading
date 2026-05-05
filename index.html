@@ -589,66 +589,102 @@ function makeFallbackChapters(){const out=[];for(let p=1;p<=totalPages;p+=20)out
 async function detectChapters(texts){
   analyzingProg.textContent='Detecting chapters…';
 
-  function cleanTitle(raw){
-    return raw
-      .replace(/^\d+\s+/,'')
-      .replace(/\s{2,}/g,' ')
-      .replace(/\d{4}\s*\d{0,4}$/,'')
-      .trim();
+  // ── STEP 1: Smart pattern detection (works offline too) ──
+  // Collect all unique top-of-page texts and find ones that look like chapter titles
+  const candidates=[];
+  for(const {page,text} of texts){
+    if(!text) continue;
+    const t=text.trim().replace(/\s{2,}/g,' ');
+    if(t.length<3||t.length>120) continue;
+    candidates.push({page,text:t});
   }
 
-  const pats=[
+  // Find lines that appear only ONCE (real chapter titles) vs many times (running headers = skip)
+  const freq={};
+  candidates.forEach(({text})=>{
+    // Normalize: strip trailing numbers/punctuation for frequency check
+    const key=text.replace(/[\d\s.,:;!?()-]+$/,'').toLowerCase().trim();
+    freq[key]=(freq[key]||0)+1;
+  });
+
+  // A real chapter start: appears <=2 times AND matches chapter pattern
+  const chPats=[
     /^chapter\s+\d+/i,
-    /^chapter\s+[ivxlcdm]+/i,
-    /^\d+\.\d*\s+[A-Z]/,
+    /^chapter\s+[ivxlcdm]+[\s.:]/i,
+    /^\d+\s+[A-Z][a-z]{2}/,          // "1 Introduction", "2 Nash Equilibrium"
     /^part\s+[ivxlcdm\d]+/i,
-    /^section\s+\d+/i,
-    /^introduction$/i,
-    /^conclusion$/i,
-    /^appendix/i,
+    /^introduction/i,
+    /^conclusion/i,
+    /^appendix/i,
+    /^bibliography/i,
+    /^references/i,
   ];
 
   const found=[];
-  for(const {page,text} of texts){
-    if(!text) continue;
-    const cleaned=cleanTitle(text.trim());
-    if(cleaned.length<4||cleaned.length>90) continue;
-    if(pats.some(p=>p.test(cleaned))){
-      const last=found[found.length-1];
-      if(last&&page-last.startPage<2) continue;
-      found.push({title:cleaned,startPage:page});
-    }
+  for(const {page,text} of candidates){
+    const key=text.replace(/[\d\s.,:;!?()-]+$/,'').toLowerCase().trim();
+    // Skip if this text appears too many times (it's a running header)
+    if((freq[key]||0)>3) continue;
+    if(!chPats.some(p=>p.test(text))) continue;
+    // Skip if too close to previous (same chapter spread across pages)
+    const last=found[found.length-1];
+    if(last&&page-last.startPage<5) continue;
+    // Clean the title
+    const cleanedTitle=text
+      .replace(/^(\d+)\s+/,'Chapter $1: ')  // "2 Nash..." -> "Chapter 2: Nash..."
+      .replace(/\s{2,}/g,' ')
+      .trim();
+    found.push({title:cleanedTitle, startPage:page});
   }
 
   if(found.length>=2){
-    return found.map((ch,i)=>({...ch,endPage:i+1<found.length?found[i+1].startPage-1:totalPages}));
+    const result=found.map((ch,i)=>({
+      ...ch,
+      endPage:i+1<found.length?found[i+1].startPage-1:totalPages
+    })).filter(ch=>ch.endPage-ch.startPage>=4);
+    if(result.length>=2) return result;
   }
 
-  analyzingProg.textContent='Asking AI to identify chapters…';
-  const sample=texts.slice(0,60).map(p=>`p${p.page}: ${p.text.substring(0,100)}`).join('\n');
-  const prompt=`This is text from the top of each page of a PDF textbook. Identify where real chapters begin.
-Return ONLY a JSON array, nothing else:
-[{"title":"Chapter 1: Introduction","startPage":3},{"title":"Chapter 2: Nash Equilibrium","startPage":18}]
-Rules: only real chapter headings (not page numbers, headers, TOC). Clean titles. If none found return [].
+  // ── STEP 2: AI detection (only when running on server) ──
+  const isLocal=window.location.protocol==='file:';
+  if(!isLocal){
+    analyzingProg.textContent='Asking AI to identify chapters…';
+    const sample=texts.slice(0,80).map(p=>`p${p.page}: ${p.text.substring(0,120)}`).join('\n');
+    const prompt=`Identify MAIN chapter start pages in this PDF textbook.
+Return ONLY a JSON array:
+[{"title":"Chapter 1: Introduction","startPage":5},{"title":"Chapter 2: Nash Equilibrium","startPage":20}]
+Rules:
+- Major chapters only (not sub-sections, activities, examples)
+- Running page headers that repeat every page are NOT chapters
+- Each chapter should span at least 5 pages
+- If fewer than 2 real chapters, return []
 PAGE DATA:
 ${sample}`;
+    try{
+      const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:800,messages:[{role:'user',content:prompt}]})});
+      if(res.ok){
+        const data=await res.json();
+        if(!data.error){
+          const raw=data.content?.find(b=>b.type==='text')?.text||'';
+          const match=raw.replace(/```json|```/g,'').trim().match(/\[[\s\S]*\]/);
+          if(match){
+            let list=JSON.parse(match[0]);
+            if(Array.isArray(list)&&list.length>=2){
+              const result=list.map((ch,i)=>({
+                title:ch.title||`Chapter ${i+1}`,
+                startPage:Math.max(1,Number(ch.startPage)||1),
+                endPage:i+1<list.length?Number(list[i+1].startPage)-1:totalPages
+              })).filter(ch=>ch.endPage-ch.startPage>=4);
+              if(result.length>=2) return result;
+            }
+          }
+        }
+      }
+    }catch(e){}
+  }
 
-  try{
-    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:600,messages:[{role:'user',content:prompt}]})});
-    if(!res.ok) return makeFallbackChapters();
-    const data=await res.json();
-    if(data.error) return makeFallbackChapters();
-    const raw=data.content?.find(b=>b.type==='text')?.text||'';
-    const match=raw.replace(/```json|```/g,'').trim().match(/\[[\s\S]*\]/);
-    if(!match) return makeFallbackChapters();
-    let list=JSON.parse(match[0]);
-    if(!Array.isArray(list)||!list.length) return makeFallbackChapters();
-    return list.map((ch,i)=>({
-      title:ch.title||`Section ${i+1}`,
-      startPage:Math.max(1,Number(ch.startPage)||1),
-      endPage:i+1<list.length?Number(list[i+1].startPage)-1:totalPages
-    }));
-  }catch(e){return makeFallbackChapters();}
+  // ── STEP 3: Fallback — 20-page splits ──
+  return makeFallbackChapters();
 }
 
 function renderChapterPicker(){
@@ -658,7 +694,7 @@ function renderChapterPicker(){
     const progress=savedPage?Math.round(((savedPage-ch.startPage)/Math.max(pages-1,1))*100):0;
     const notes=store.get(K.notes(bookId),[]).filter(n=>n.chapterIdx===i);
     const card=document.createElement('div');card.className='chapter-card'+(i===lastChap?' last-read':'');
-    card.innerHTML=`<div class="cc-num">CHAPTER ${i+1} · p.${ch.startPage}</div><div class="cc-title">${esc(ch.title)}</div><div class="cc-meta"><span>📖 ${pages} pages</span>${savedPage?`<span class="cc-tag cc-tag-y">p.${savedPage}</span>`:''}${notes.length?`<span class="cc-tag cc-tag-g">${notes.length} note${notes.length>1?'s':''}</span>`:''}</div>${progress>0?`<div class="cc-prog"><div class="cc-prog-bar" style="width:${progress}%"></div></div>`:''}`;
+    card.innerHTML=`<div class="cc-num">CHAPTER ${i+1} · p.${ch.startPage}</div><div class="cc-title">Chapter ${i+1}</div><div class="cc-meta"><span>📖 ${pages} pages</span>${savedPage?`<span class="cc-tag cc-tag-y">p.${savedPage}</span>`:''}${notes.length?`<span class="cc-tag cc-tag-g">${notes.length} note${notes.length>1?'s':''}</span>`:''}</div>${progress>0?`<div class="cc-prog"><div class="cc-prog-bar" style="width:${progress}%"></div></div>`:''}`;
     card.addEventListener('click',()=>openChapter(i));chaptersGrid.appendChild(card);
   });
   showScreen('chapters');
@@ -823,6 +859,11 @@ function removeTyping(){$('typing-indicator')?.remove();}
 
 async function sendMessage(){
   const text=chatInput.value.trim();if(!text||isAIThinking||!pdfDoc)return;
+  // Chat only works when deployed on server, not local file
+  if(window.location.protocol==='file:'){
+    appendMsg('ai','**Chat only works on the deployed version.** Open the app at your Render URL (ladderreading.onrender.com) to use the AI assistant.',true);
+    return;
+  }
   chatInput.value='';chatInput.style.height='auto';isAIThinking=true;chatSend.disabled=true;chatStatus.textContent='Thinking…';
   appendMsg('user',text);pdfFullText=null;await buildPdfTextContext();
   const ch=chapters[activeChapter];
