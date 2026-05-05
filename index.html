@@ -589,79 +589,44 @@ function makeFallbackChapters(){const out=[];for(let p=1;p<=totalPages;p+=20)out
 async function detectChapters(texts){
   analyzingProg.textContent='Detecting chapters…';
 
-  // ── STEP 1: Smart pattern detection (works offline too) ──
-  // Collect all unique top-of-page texts and find ones that look like chapter titles
-  const candidates=[];
-  for(const {page,text} of texts){
-    if(!text) continue;
-    const t=text.trim().replace(/\s{2,}/g,' ');
-    if(t.length<3||t.length>120) continue;
-    candidates.push({page,text:t});
-  }
-
-  // Find lines that appear only ONCE (real chapter titles) vs many times (running headers = skip)
-  const freq={};
-  candidates.forEach(({text})=>{
-    // Normalize: strip trailing numbers/punctuation for frequency check
-    const key=text.replace(/[\d\s.,:;!?()-]+$/,'').toLowerCase().trim();
-    freq[key]=(freq[key]||0)+1;
-  });
-
-  // A real chapter start: appears <=2 times AND matches chapter pattern
-  const chPats=[
-    /^chapter\s+\d+/i,
-    /^chapter\s+[ivxlcdm]+[\s.:]/i,
-    /^\d+\s+[A-Z][a-z]{2}/,          // "1 Introduction", "2 Nash Equilibrium"
-    /^part\s+[ivxlcdm\d]+/i,
-    /^introduction/i,
-    /^conclusion/i,
-    /^appendix/i,
-    /^bibliography/i,
-    /^references/i,
-  ];
-
-  const found=[];
-  for(const {page,text} of candidates){
-    const key=text.replace(/[\d\s.,:;!?()-]+$/,'').toLowerCase().trim();
-    // Skip if this text appears too many times (it's a running header)
-    if((freq[key]||0)>3) continue;
-    if(!chPats.some(p=>p.test(text))) continue;
-    // Skip if too close to previous (same chapter spread across pages)
-    const last=found[found.length-1];
-    if(last&&page-last.startPage<5) continue;
-    // Clean the title
-    const cleanedTitle=text
-      .replace(/^(\d+)\s+/,'Chapter $1: ')  // "2 Nash..." -> "Chapter 2: Nash..."
-      .replace(/\s{2,}/g,' ')
-      .trim();
-    found.push({title:cleanedTitle, startPage:page});
-  }
-
-  if(found.length>=2){
-    const result=found.map((ch,i)=>({
-      ...ch,
-      endPage:i+1<found.length?found[i+1].startPage-1:totalPages
-    })).filter(ch=>ch.endPage-ch.startPage>=4);
-    if(result.length>=2) return result;
-  }
-
-  // ── STEP 2: AI detection (only when running on server) ──
+  // Always use AI when on server — it is far more reliable than patterns
   const isLocal=window.location.protocol==='file:';
+
   if(!isLocal){
     analyzingProg.textContent='Asking AI to identify chapters…';
-    const sample=texts.slice(0,80).map(p=>`p${p.page}: ${p.text.substring(0,120)}`).join('\n');
-    const prompt=`Identify MAIN chapter start pages in this PDF textbook.
-Return ONLY a JSON array:
-[{"title":"Chapter 1: Introduction","startPage":5},{"title":"Chapter 2: Nash Equilibrium","startPage":20}]
+    const sample=texts.slice(0,Math.min(texts.length,100))
+      .map(p=>`p${p.page}: ${p.text.substring(0,150)}`).join('\n');
+
+    const prompt=`You are analyzing a PDF textbook. Below is the first ~150 characters from the top of each page.
+
+Your job: identify where MAIN chapters begin and give each a SHORT name (3-5 words max).
+
 Rules:
-- Major chapters only (not sub-sections, activities, examples)
-- Running page headers that repeat every page are NOT chapters
-- Each chapter should span at least 5 pages
-- If fewer than 2 real chapters, return []
+1. Find real chapter boundaries — where the subject changes significantly
+2. Ignore running page headers (text that repeats every page)
+3. Ignore sub-sections, activities, examples within a chapter
+4. Each chapter should span at least 5 pages
+5. If the chapter has a real name, shorten it to 3-5 words
+6. If no real name found, create a 3-5 word descriptive title based on the content
+7. Return ONLY a JSON array, no explanation:
+
+[
+  {"title":"Intro to Game Theory","startPage":5},
+  {"title":"Two-Person Zero-Sum Games","startPage":20},
+  {"title":"Nash Equilibrium","startPage":45}
+]
+
+If you cannot find at least 2 clear chapters, return [].
+
 PAGE DATA:
 ${sample}`;
+
     try{
-      const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:800,messages:[{role:'user',content:prompt}]})});
+      const res=await fetch('/api/chat',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:1000,messages:[{role:'user',content:prompt}]})
+      });
       if(res.ok){
         const data=await res.json();
         if(!data.error){
@@ -680,10 +645,40 @@ ${sample}`;
           }
         }
       }
-    }catch(e){}
+    }catch(e){ console.warn('AI chapter detect failed:',e); }
   }
 
-  // ── STEP 3: Fallback — 20-page splits ──
+  // Local fallback: pattern-based detection
+  analyzingProg.textContent='Scanning for chapters…';
+  const freq={};
+  texts.forEach(({text})=>{
+    const key=text.replace(/[\d\s.,:;!?()-]+$/,'').toLowerCase().trim().substring(0,40);
+    freq[key]=(freq[key]||0)+1;
+  });
+  const pats=[
+    /^chapter\s+[\divxlcdm]+/i,
+    /^\d+\.?\s+[A-Z][a-z]{2}/,
+    /^part\s+[\divxlcdm\d]+/i,
+    /^introduction\b/i,/^conclusion\b/i,/^appendix\b/i,
+  ];
+  const found=[];
+  for(const {page,text} of texts){
+    if(!text) continue;
+    const t=text.trim().replace(/\s{2,}/g,' ');
+    if(t.length<3||t.length>100) continue;
+    const key=t.replace(/[\d\s.,:;!?()-]+$/,'').toLowerCase().trim().substring(0,40);
+    if((freq[key]||0)>3) continue;
+    if(!pats.some(p=>p.test(t))) continue;
+    const last=found[found.length-1];
+    if(last&&page-last.startPage<5) continue;
+    found.push({title:t.replace(/^(\d+)\s+/,'Chapter $1: ').trim(),startPage:page});
+  }
+  if(found.length>=2){
+    const r=found.map((ch,i)=>({...ch,endPage:i+1<found.length?found[i+1].startPage-1:totalPages}))
+      .filter(ch=>ch.endPage-ch.startPage>=4);
+    if(r.length>=2) return r;
+  }
+
   return makeFallbackChapters();
 }
 
