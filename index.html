@@ -194,7 +194,12 @@ main{flex:1;overflow:hidden;position:relative;display:flex;}
 .side-arrow{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.07);border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.35);font-size:0.95rem;transition:all 0.18s;}
 .side-nav:hover .side-arrow{background:linear-gradient(135deg,#ff9c3c,#ff6366);border-color:transparent;color:white;transform:scale(1.08);box-shadow:0 4px 16px rgba(255,120,80,0.4);}
 .side-nav.disabled{opacity:0.12;pointer-events:none;}
-#viewer-inner{position:absolute;left:48px;right:48px;top:0;bottom:0;overflow-y:auto;overflow-x:hidden;padding:16px 8px 80px;}
+#viewer-inner{position:absolute;left:48px;right:48px;top:0;bottom:0;overflow-y:auto;overflow-x:auto;padding:8px 4px 80px;}
+@media(max-width:600px){
+  #viewer-inner{left:36px;right:36px;padding:4px 2px 70px;}
+  .side-nav{width:36px;}
+  #zoom-bar{bottom:10px;}
+}
 #pdf-canvas-wrapper{position:relative;display:inline-flex;justify-content:center;width:100%;}
 #pdf-canvas{max-width:100%;box-shadow:0 4px 40px rgba(0,0,0,0.7);border-radius:3px;display:block;background:white;}
 #annotation-canvas{position:absolute;top:0;left:0;pointer-events:none;display:block;}
@@ -226,6 +231,26 @@ main{flex:1;overflow:hidden;position:relative;display:flex;}
 .hl-b{color:#3c96ff!important;}
 .tb-div{width:1px;height:16px;background:var(--border2);flex-shrink:0;}
 
+/* ── ZOOM CONTROLS ── */
+#zoom-bar{
+  position:fixed;bottom:90px;left:50%;transform:translateX(-50%);
+  display:none;align-items:center;gap:6px;z-index:110;
+  background:rgba(13,13,20,0.9);border:1px solid var(--border2);
+  border-radius:30px;padding:6px 12px;backdrop-filter:blur(12px);
+  box-shadow:0 4px 24px rgba(0,0,0,0.5);
+}
+.zoom-btn{
+  width:36px;height:36px;border-radius:50%;border:none;
+  background:rgba(255,255,255,0.08);color:var(--text);
+  font-size:1.2rem;cursor:pointer;display:flex;align-items:center;
+  justify-content:center;transition:all 0.15s;flex-shrink:0;
+  -webkit-tap-highlight-color:transparent;
+}
+.zoom-btn:hover{background:linear-gradient(135deg,#ff9c3c,#ff6366);color:white;}
+#zoom-level{
+  font-family:'DM Mono',monospace;font-size:0.65rem;
+  color:var(--text2);min-width:36px;text-align:center;
+}
 /* ── CLEAR HIGHLIGHT ── */
 #clear-hl-btn{
   position:fixed;bottom:20px;left:56px;display:none;
@@ -422,6 +447,12 @@ main{flex:1;overflow:hidden;position:relative;display:flex;}
       </div>
     </div>
     <div class="side-nav disabled" id="nav-next"><div class="side-arrow">&#8594;</div></div>
+    <div id="zoom-bar">
+      <button class="zoom-btn" id="zoom-out" title="Zoom out">−</button>
+      <span id="zoom-level">100%</span>
+      <button class="zoom-btn" id="zoom-in" title="Zoom in">+</button>
+      <button class="zoom-btn" id="zoom-fit" title="Fit to screen" style="font-size:0.7rem;width:auto;padding:0 8px;border-radius:12px;">Fit</button>
+    </div>
   </div>
 
   <div id="notebook-screen">
@@ -488,6 +519,7 @@ const IDB=(()=>{let db=null;const DB='LadderPDFs',VER=1,ST='pdfs';function open(
 let pdfDoc=null,currentPage=1,totalPages=0,pdfRawBuf=null,pdfFullText=null;
 let bookId='',isReopenMode=false,chapters=[],activeChapter=null;
 let isRendering=false,chatOpen=false,isAIThinking=false,conversationHistory=[],selText='';
+let zoomLevel=1.0; // 1.0 = fit to screen
 
 document.addEventListener('DOMContentLoaded',function(){
 const $=id=>document.getElementById(id);
@@ -514,6 +546,7 @@ function showScreen(name){
   chatFab.style.display=iv?'flex':'none';noteFab.style.display=iv?'flex':'none';
   navPrev.style.display=iv?'flex':'none';navNext.style.display=iv?'flex':'none';
   pageInfo.style.display=iv?'block':'none';
+  $('zoom-bar').style.display=iv?'flex':'none';
   if(!iv)$('clear-hl-btn').style.display='none';
 }
 
@@ -722,9 +755,20 @@ notebookBtn.addEventListener('click',openNotebook);
 
 async function renderPage(num){
   if(isRendering)return;isRendering=true;hideSelToolbar();
-  const page=await pdfDoc.getPage(num);const scale=window.devicePixelRatio>1?1.8:1.5;const vp=page.getViewport({scale});
-  const ctx=pdfCanvas.getContext('2d');pdfCanvas.width=vp.width;pdfCanvas.height=vp.height;
-  const maxW=viewerInner.clientWidth-24;const cssW=Math.min(vp.width,maxW);const cssH=Math.round(vp.height*(cssW/vp.width));
+  const page=await pdfDoc.getPage(num);
+
+  // High-res base scale for crisp text on retina/mobile screens
+  const dpr=window.devicePixelRatio||1;
+  const baseScale=Math.max(2.0, dpr*1.5);
+  const vp=page.getViewport({scale:baseScale});
+  const ctx=pdfCanvas.getContext('2d');
+  pdfCanvas.width=vp.width;pdfCanvas.height=vp.height;
+
+  // CSS width = fill all available screen width × zoom
+  // Use full clientWidth with minimal padding so text is as large as possible
+  const availW=viewerInner.clientWidth - 8;
+  const cssW=Math.round(availW*zoomLevel);
+  const cssH=Math.round(vp.height*(cssW/vp.width));
   pdfCanvas.style.width=cssW+'px';pdfCanvas.style.height=cssH+'px';
   await page.render({canvasContext:ctx,viewport:vp}).promise;
   annotCanvas.width=vp.width;annotCanvas.height=vp.height;annotCanvas.style.width=cssW+'px';annotCanvas.style.height=cssH+'px';
@@ -751,6 +795,67 @@ function restoreAnnotations(pageNum){
 }
 navPrev.addEventListener('click',()=>{if(currentPage>chapters[activeChapter].startPage)renderPage(--currentPage);});
 navNext.addEventListener('click',()=>{if(currentPage<chapters[activeChapter].endPage)renderPage(++currentPage);});
+
+/* ── ZOOM CONTROLS ── */
+function updateZoomLabel(){$('zoom-level').textContent=Math.round(zoomLevel*100)+'%';}
+
+$('zoom-in').addEventListener('click',()=>{
+  zoomLevel=Math.min(3.0,zoomLevel+0.25);updateZoomLabel();renderPage(currentPage);
+});
+$('zoom-out').addEventListener('click',()=>{
+  zoomLevel=Math.max(0.5,zoomLevel-0.25);updateZoomLabel();renderPage(currentPage);
+});
+$('zoom-fit').addEventListener('click',()=>{
+  zoomLevel=1.0;updateZoomLabel();renderPage(currentPage);
+});
+
+// Pinch-to-zoom on mobile
+let lastPinchDist=0;
+viewerInner.addEventListener('touchstart',e=>{
+  if(e.touches.length===2){
+    lastPinchDist=Math.hypot(
+      e.touches[0].clientX-e.touches[1].clientX,
+      e.touches[0].clientY-e.touches[1].clientY
+    );
+  }
+},{passive:true});
+viewerInner.addEventListener('touchmove',e=>{
+  if(e.touches.length===2){
+    const dist=Math.hypot(
+      e.touches[0].clientX-e.touches[1].clientX,
+      e.touches[0].clientY-e.touches[1].clientY
+    );
+    if(lastPinchDist>0){
+      const delta=dist/lastPinchDist;
+      zoomLevel=Math.min(3.0,Math.max(0.5,zoomLevel*delta));
+      updateZoomLabel();
+      // Apply zoom via CSS transform for smooth feel during pinch
+      pdfCanvas.style.width=Math.round((viewerInner.clientWidth-24)*zoomLevel)+'px';
+      annotCanvas.style.width=pdfCanvas.style.width;
+      textLayerDiv.style.width=pdfCanvas.style.width;
+    }
+    lastPinchDist=dist;
+  }
+},{passive:true});
+viewerInner.addEventListener('touchend',e=>{
+  if(e.touches.length<2&&lastPinchDist>0){
+    lastPinchDist=0;
+    // Re-render at new zoom level for full quality
+    renderPage(currentPage);
+  }
+},{passive:true});
+
+// Double-tap to zoom in/reset on mobile
+let lastTap=0;
+viewerInner.addEventListener('touchend',e=>{
+  if(e.touches.length>0) return;
+  const now=Date.now();
+  if(now-lastTap<300){
+    zoomLevel=zoomLevel>1.1?1.0:1.75;
+    updateZoomLabel();renderPage(currentPage);
+  }
+  lastTap=now;
+},{passive:true});
 document.addEventListener('keydown',e=>{if(e.target===chatInput||e.target===qnInput)return;if((e.key==='ArrowRight'||e.key==='ArrowDown')&&!navNext.classList.contains('disabled'))navNext.click();if((e.key==='ArrowLeft'||e.key==='ArrowUp')&&!navPrev.classList.contains('disabled'))navPrev.click();});
 
 document.addEventListener('mouseup',e=>{if(!$('viewer-screen').contains(e.target))return;const sel=window.getSelection();const txt=sel?.toString().trim();if(txt&&txt.length>1){selText=txt;showSelToolbar(e.clientX,e.clientY);}else hideSelToolbar();});
