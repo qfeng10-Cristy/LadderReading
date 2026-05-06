@@ -732,7 +732,10 @@ function openChapter(idx){
   activeChapter=idx;store.set(K.lastCh(bookId),idx);
   currentPage=store.get(K.page(bookId,idx),null)||chapters[idx].startPage;
   conversationHistory=store.get(K.chat(bookId,idx),[]);renderSavedMessages();
-  hdrChTag.textContent=chapters[idx].title;showScreen('viewer');renderPage(currentPage);
+  hdrChTag.textContent=chapters[idx].title;
+  zoomLevel=1.0; // always start at fit-to-screen
+  updateZoomLabel();
+  showScreen('viewer');renderPage(currentPage);
 }
 chaptersBtn.addEventListener('click',()=>{chatPanel.classList.remove('open');chatOpen=false;renderChapterPicker();});
 $('ch-back-btn').addEventListener('click',showLibrary);
@@ -757,24 +760,35 @@ async function renderPage(num){
   if(isRendering)return;isRendering=true;hideSelToolbar();
   const page=await pdfDoc.getPage(num);
 
-  // High-res base scale for crisp text on retina/mobile screens
-  const dpr=window.devicePixelRatio||1;
-  const baseScale=Math.max(2.0, dpr*1.5);
-  const vp=page.getViewport({scale:baseScale});
-  const ctx=pdfCanvas.getContext('2d');
-  pdfCanvas.width=vp.width;pdfCanvas.height=vp.height;
-
-  // CSS width = fill all available screen width × zoom
-  // Use full clientWidth with minimal padding so text is as large as possible
+  // Step 1: figure out CSS display size first (fit to screen × zoom)
   const availW=viewerInner.clientWidth - 8;
   const cssW=Math.round(availW*zoomLevel);
-  const cssH=Math.round(vp.height*(cssW/vp.width));
+
+  // Step 2: render at high resolution for crisp text (scale to actual canvas pixels)
+  const dpr=window.devicePixelRatio||1;
+  // We want canvas pixels = cssW * dpr for retina sharpness
+  const page1=page.getViewport({scale:1});
+  const renderScale=(cssW*dpr)/page1.width;
+  const vp=page.getViewport({scale:renderScale});
+
+  const ctx=pdfCanvas.getContext('2d');
+  pdfCanvas.width=vp.width;pdfCanvas.height=vp.height;
+  const cssH=Math.round(vp.height/dpr);
   pdfCanvas.style.width=cssW+'px';pdfCanvas.style.height=cssH+'px';
   await page.render({canvasContext:ctx,viewport:vp}).promise;
-  annotCanvas.width=vp.width;annotCanvas.height=vp.height;annotCanvas.style.width=cssW+'px';annotCanvas.style.height=cssH+'px';
-  requestAnimationFrame(()=>{const off=pdfCanvas.offsetLeft;annotCanvas.style.left=off+'px';textLayerDiv.style.left=off+'px';});
-  textLayerDiv.style.width=cssW+'px';textLayerDiv.style.height=cssH+'px';textLayerDiv.innerHTML='';
-  const tcontent=await page.getTextContent();const sr=cssW/vp.width;
+
+  // Sync annotation canvas to same CSS size as PDF canvas
+  annotCanvas.width=vp.width;annotCanvas.height=vp.height;
+  annotCanvas.style.width=cssW+'px';annotCanvas.style.height=cssH+'px';
+  requestAnimationFrame(()=>{
+    const off=pdfCanvas.offsetLeft;
+    annotCanvas.style.left=off+'px';
+    textLayerDiv.style.left=off+'px';
+  });
+  textLayerDiv.style.width=cssW+'px';textLayerDiv.style.height=cssH+'px';
+  textLayerDiv.innerHTML='';
+  const tcontent=await page.getTextContent();
+  const sr=cssW/vp.width;  // CSS px per canvas px
   tcontent.items.forEach(item=>{
     if(!item.str.trim())return;const tx=pdfjsLib.Util.transform(vp.transform,item.transform);
     const fontSize=Math.abs(tx[3])*sr,cssX=tx[4]*sr,cssY=(vp.height-tx[5])*sr;
@@ -829,10 +843,11 @@ viewerInner.addEventListener('touchmove',e=>{
       const delta=dist/lastPinchDist;
       zoomLevel=Math.min(3.0,Math.max(0.5,zoomLevel*delta));
       updateZoomLabel();
-      // Apply zoom via CSS transform for smooth feel during pinch
-      pdfCanvas.style.width=Math.round((viewerInner.clientWidth-24)*zoomLevel)+'px';
-      annotCanvas.style.width=pdfCanvas.style.width;
-      textLayerDiv.style.width=pdfCanvas.style.width;
+      // Apply zoom via CSS for smooth live feel during pinch
+      const liveW=Math.round((viewerInner.clientWidth-8)*zoomLevel)+'px';
+      pdfCanvas.style.width=liveW;
+      annotCanvas.style.width=liveW;
+      textLayerDiv.style.width=liveW;
     }
     lastPinchDist=dist;
   }
